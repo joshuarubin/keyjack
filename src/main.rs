@@ -1,16 +1,24 @@
+mod jack_handlers;
+mod winkey;
+
 use anyhow::Result;
-use signal_hook::{
-    consts::TERM_SIGNALS,
-    iterator::{exfiltrator::SignalOnly, SignalsInfo},
-};
+use jack_handlers::{notification, process};
+use mio::{Events, Interest, Poll, Token};
+use signal_hook::consts::TERM_SIGNALS;
+use signal_hook_mio::v0_7::Signals;
 use std::{
-    f64::consts::PI,
-    sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
-    },
+    io::ErrorKind,
+    sync::{atomic::AtomicUsize, Arc},
 };
 use structopt::StructOpt;
+
+#[cfg(unix)]
+const DEFAULT_TTY: &str = "/dev/ttyUSB0";
+#[cfg(windows)]
+const DEFAULT_TTY: &str = "COM1";
+
+const SIGNAL: Token = Token(0);
+const SERIAL: Token = Token(1);
 
 #[derive(StructOpt)]
 struct Opt {
@@ -19,24 +27,9 @@ struct Opt {
 
     #[structopt(short = "f", default_value = "550")]
     sidetone_freq: f64,
-}
 
-fn handle_signals() -> Result<()> {
-    // register SIGTERM, SIGQUIT, SIGINT signals
-    let term = Arc::new(AtomicBool::new(false));
-    for sig in TERM_SIGNALS {
-        signal_hook::flag::register(*sig, Arc::clone(&term))?;
-    }
-
-    let mut signals = SignalsInfo::<SignalOnly>::new(TERM_SIGNALS)?;
-
-    // listen for SIGTERM, SIGQUIT, SIGINT
-    for sig in &mut signals {
-        println!("signal {:?}", sig);
-        break;
-    }
-
-    Ok(())
+    #[structopt(short = "p", default_value = DEFAULT_TTY)]
+    serial_port: String,
 }
 
 fn main() -> Result<()> {
@@ -55,69 +48,38 @@ fn main() -> Result<()> {
 
     // create the async client
     let _aclient = client.activate_async(
-        NotificationHandler::new(Arc::clone(&sample_rate)),
-        ProcessHandler::new(port, opt.sidetone_freq, Arc::clone(&sample_rate)),
+        notification::Handler::new(Arc::clone(&sample_rate)),
+        process::Handler::new(port, opt.sidetone_freq, Arc::clone(&sample_rate)),
     )?;
 
-    handle_signals()
-}
+    let mut poll = Poll::new()?;
+    let mut events = Events::with_capacity(16);
 
-struct NotificationHandler {
-    sample_rate: Arc<AtomicUsize>,
-}
+    // register SIGTERM, SIGQUIT, SIGINT signals
+    let mut signals = Signals::new(TERM_SIGNALS)?;
+    poll.registry()
+        .register(&mut signals, SIGNAL, Interest::READABLE)?;
 
-impl NotificationHandler {
-    fn new(sample_rate: Arc<AtomicUsize>) -> Self {
-        NotificationHandler { sample_rate }
-    }
-}
+    // initialize the keyer
+    let mut keyer = winkey::Client::new(opt.serial_port, poll.registry(), SERIAL)?;
 
-impl jack::NotificationHandler for NotificationHandler {
-    /// Called whenever the system sample rate changes.
-    fn sample_rate(&mut self, _client: &jack::Client, srate: jack::Frames) -> jack::Control {
-        self.sample_rate.store(srate as usize, Ordering::SeqCst);
-        jack::Control::Continue
-    }
-}
+    // main event loop
+    loop {
+        poll.poll(&mut events, None).or_else(|e| {
+            if e.kind() == ErrorKind::Interrupted {
+                events.clear();
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
 
-struct ProcessHandler {
-    port: jack::Port<jack::AudioOut>,
-    sidetone_freq: f64,
-    sample_rate: Arc<AtomicUsize>,
-}
-
-impl ProcessHandler {
-    fn new(
-        port: jack::Port<jack::AudioOut>,
-        sidetone_freq: f64,
-        sample_rate: Arc<AtomicUsize>,
-    ) -> Self {
-        ProcessHandler {
-            port,
-            sidetone_freq,
-            sample_rate,
-        }
-    }
-
-    fn write_sine(&mut self, process_scope: &jack::ProcessScope) {
-        let sample_rate = self.sample_rate.load(Ordering::SeqCst);
-        let two_pi_freq_per_rate = (2. * PI * self.sidetone_freq) / sample_rate as f64;
-        let buf = self.port.as_mut_slice(process_scope);
-
-        for (n, val) in buf.iter_mut().enumerate() {
-            let pos = (process_scope.last_frame_time() as usize + n) as f64;
-            *val = (two_pi_freq_per_rate * pos).sin() as f32;
+        for event in events.iter() {
+            match event.token() {
+                SIGNAL => return Ok(()),
+                SERIAL => keyer.read()?,
+                _ => unreachable!(),
+            }
         }
     }
 }
-
-impl jack::ProcessHandler for ProcessHandler {
-    fn process(
-        &mut self,
-        _client: &jack::Client,
-        process_scope: &jack::ProcessScope,
-    ) -> jack::Control {
-        self.write_sine(process_scope);
-
-        jack::Control::Continue
-    }
