@@ -142,6 +142,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jack",
+ "jack-sys",
+ "libc",
  "mio",
  "mio-serial",
  "serialport",
