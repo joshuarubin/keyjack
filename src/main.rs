@@ -33,6 +33,9 @@ struct Opt {
 
     #[structopt(short = "p", default_value = DEFAULT_TTY)]
     serial_port: String,
+
+    #[structopt(short = "v", default_value = "1.0")]
+    volume: f32,
 }
 
 fn main() -> Result<()> {
@@ -63,6 +66,7 @@ fn main() -> Result<()> {
         opt.sidetone_freq,
         Arc::clone(&sample_rate),
         Arc::clone(&tx_key_line),
+        opt.volume,
     )?;
 
     // create the async client

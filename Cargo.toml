@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
+biquad = "0.4.0"
 jack = "0.7.0"
 jack-sys = "0.2.0"
 libc = "0.2.0"
