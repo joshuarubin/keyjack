@@ -193,7 +193,16 @@ impl Client {
                 println!("\nWPM: {}", (data[0] & SPEED_MASK) + MIN_SPEED);
             }
             _ => {
-                print!("{}", data[0] as char);
+                match data[0] {
+                    0x23 => print!("<BK>"),
+                    0x25 => print!("<SN>"),
+                    0x26 => print!("<AS>"),
+                    0x28 => print!("<KN>"),
+                    0x2b => print!("<AR>"),
+                    0x3d => print!("<BT>"),
+                    0x3e => print!("<SK>"),
+                    _ => print!("{}", data[0] as char),
+                }
                 io::stdout().flush()?;
             }
         }
